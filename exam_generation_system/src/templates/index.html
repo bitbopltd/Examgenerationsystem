@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Exam Paper Generator</title>
+    <style>
+        body { font-family: sans-serif; margin: 20px; background-color: #f4f4f4; color: #333; }
+        .container { background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        h1, h2 { color: #333; }
+        label { display: block; margin-top: 10px; font-weight: bold; }
+        input[type="text"], input[type="number"], input[type="file"], select, textarea {
+            width: calc(100% - 22px);
+            padding: 10px;
+            margin-top: 5px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        input[type="submit"] { 
+            background-color: #007bff; color: white; padding: 10px 15px; 
+            border: none; border-radius: 4px; cursor: pointer; font-size: 16px; margin-top: 20px;
+        }
+        input[type="submit"]:hover { background-color: #0056b3; }
+        .form-section { margin-bottom: 20px; padding-bottom: 20px; border-bottom: 1px solid #eee; }
+        .form-section:last-child { border-bottom: none; }
+        .file-list { list-style-type: none; padding: 0; }
+        .file-list li { padding: 5px 0; }
+        pre { background-color: #eee; padding: 15px; border-radius: 4px; white-space: pre-wrap; word-wrap: break-word; font-size: 14px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Exam Paper Generator</h1>
+
+        {% if error_message %}
+            <p style="color: red;">{{ error_message }}</p>
+        {% endif %}
+
+        <form method="POST" enctype="multipart/form-data">
+            <div class="form-section">
+                <h2>1. Upload or Select Book</h2>
+                <label for="book_file">Upload New Book (PDF):</label>
+                <input type="file" name="book_file" id="book_file" accept=".pdf">
+                
+                <label for="existing_book">Or Select Existing Book:</label>
+                <select name="existing_book" id="existing_book">
+                    <option value="">-- Select an uploaded book --</option>
+                    {% for book in available_books %}
+                        <option value="{{ book }}" {% if selected_book == book %}selected{% endif %}>{{ book }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div class="form-section">
+                <h2>2. Exam Details</h2>
+                <label for="school_name">School Name:</label>
+                <input type="text" name="school_name" id="school_name" value="{{ exam_details.school_name if exam_details else 'Oriental Public School Mardan' }}" required>
+
+                <label for="exam_title">Exam Title:</label>
+                <input type="text" name="exam_title" id="exam_title" value="{{ exam_details.exam_title if exam_details else 'Final Term Examination - 2025' }}" required>
+
+                <label for="class_level">Class Level (e.g., 6th, 9th):</label>
+                <input type="text" name="class_level" id="class_level" value="{{ exam_details.class_level if exam_details else '6th' }}" required>
+
+                <label for="subject">Subject:</label>
+                <input type="text" name="subject" id="subject" value="{{ exam_details.subject if exam_details else 'General Science' }}" required>
+
+                <label for="total_time">Total Time (e.g., 3:00 Hours):</label>
+                <input type="text" name="total_time" id="total_time" value="{{ exam_details.total_time if exam_details else '3:00 Hours' }}" required>
+                
+                <label for="version">Version (e.g., A, B, C - Optional):</label>
+                <input type="text" name="version" id="version" value="{{ exam_details.version if exam_details else 'A' }}">
+            </div>
+
+            <div class="form-section">
+                <h2>3. Question Configuration</h2>
+                <label for="num_mcq">Number of Multiple Choice Questions (Section A):</label>
+                <input type="number" name="num_mcq" id="num_mcq" value="{{ question_config.num_mcq if question_config else 15 }}" min="0" required>
+
+                <label for="num_short_answer">Number of Short Answer Questions (Section B):</label>
+                <input type="number" name="num_short_answer" id="num_short_answer" value="{{ question_config.num_short_answer if question_config else 9 }}" min="0" required>
+
+                <label for="num_long_answer">Number of Long Answer Questions (Section C):</label>
+                <input type="number" name="num_long_answer" id="num_long_answer" value="{{ question_config.num_long_answer if question_config else 3 }}" min="0" required>
+            </div>
+            
+            <input type="submit" value="Generate Exam Paper">
+        </form>
+
+        {% if generated_paper %}
+            <div class="form-section">
+                <h2>Generated Exam Paper</h2>
+                <pre>{{ generated_paper }}</pre>
+                <form method="POST" action="{{ url_for('download_exam') }}">
+                    <input type="hidden" name="paper_content" value="{{ generated_paper }}">
+                    <input type="hidden" name="paper_filename" value="{{ paper_filename }}">
+                    <input type="submit" value="Download as Text File">
+                </form>
+            </div>
+        {% endif %}
+
+    </div>
+</body>
+</html>
+
