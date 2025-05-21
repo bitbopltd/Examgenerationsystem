@@ -1,9 +1,10 @@
-import subprocess
+
+import PyPDF2
 import os
 
 def extract_text_from_pdf(pdf_path):
     """
-    Extracts text content from a given PDF file using pdftotext.
+    Extracts text content from a given PDF file using PyPDF2.
 
     Args:
         pdf_path (str): The absolute path to the PDF file.
@@ -16,31 +17,24 @@ def extract_text_from_pdf(pdf_path):
         return None
 
     try:
-        # Use pdftotext to extract text. The '-' outputs to stdout.
-        # -layout: maintain original physical layout
-        # -nopgbrk: don't insert page breaks
-        # -enc UTF-8: specify UTF-8 encoding
-        result = subprocess.run(
-            ["pdftotext", "-layout", "-nopgbrk", "-enc", "UTF-8", pdf_path, "-"],
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        return result.stdout
-    except subprocess.CalledProcessError as e:
+        text = ""
+        with open(pdf_path, 'rb') as file:
+            reader = PyPDF2.PdfReader(file)
+            for page in reader.pages:
+                text += page.extract_text()
+
+        if not text.strip():
+            print("Warning: Extracted text is empty. The PDF might be image-based.")
+            return None
+
+        return text
+    except Exception as e:
         print(f"Error during PDF text extraction: {e}")
-        print(f"pdftotext stderr: {e.stderr}")
-        return None
-    except FileNotFoundError:
-        print("Error: pdftotext command not found. Ensure poppler-utils is installed.")
         return None
 
 # Example usage (can be removed or commented out in production code)
 if __name__ == '__main__':
-    # Create a dummy PDF for testing if it doesn't exist
-    # In a real scenario, this test PDF would be one of the uploaded books.
-    # For now, we'll assume a test PDF exists or this part is for illustration.
-    test_pdf_path = "/home/ubuntu/upload/Bio 9th Unit 9.pdf" # Using the provided sample book
+    test_pdf_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'uploads', 'test.pdf')
     if os.path.exists(test_pdf_path):
         print(f"Attempting to extract text from: {test_pdf_path}")
         extracted_text = extract_text_from_pdf(test_pdf_path)
@@ -52,4 +46,3 @@ if __name__ == '__main__':
             print("Failed to extract text.")
     else:
         print(f"Test PDF not found at {test_pdf_path}. Skipping example usage.")
-

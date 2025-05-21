@@ -1,0 +1,433 @@
+# Adding detailed logging to aid in debugging the question generation process.
+import google.generativeai as genai
+import os
+import random
+from typing import Dict, List, Any, Optional # Import Optional
+import time
+import json
+import re # For regular expressions
+import traceback # For full tracebacks
+
+# --- Configuration ---
+API_KEY = os.getenv('GEMINI_API_KEY')
+if not API_KEY:
+    raise ValueError("GEMINI_API_KEY environment variable not set.")
+genai.configure(api_key=API_KEY)
+
+# --- Model and Safety Settings ---
+MODEL_NAME = 'models/gemini-1.5-flash-latest' # Using the requested model
+
+DEFAULT_SAFETY_SETTINGS = [
+    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+]
+
+# --- Utility Functions ---
+def log_progress(msg: str):
+    """Logs a message with a timestamp and flushes the output."""
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
+
+log_progress(f"Using Gemini model: {MODEL_NAME}")
+model = genai.GenerativeModel(
+    MODEL_NAME,
+    safety_settings=DEFAULT_SAFETY_SETTINGS
+)
+
+def extract_json_from_response(text_response: str) -> Any:
+    """
+    Extracts a JSON object or list from a string, handling markdown and heuristics. (Same as before)
+    """
+    if not text_response:
+        log_progress("extract_json_from_response: Received empty text_response.")
+        return None
+    log_progress(f"extract_json_from_response: Attempting to extract JSON from: ---START RAW RESPONSE (len={len(text_response)})---\n{text_response[:1000]}{'...' if len(text_response) > 1000 else ''}\n---END RAW RESPONSE---")
+    match = re.search(r"```json\s*([\s\S]*?)\s*```", text_response, re.IGNORECASE)
+    if match:
+        json_str = match.group(1); log_progress("extract_json_from_response: Found JSON in markdown block.")
+        try: return json.loads(json_str)
+        except json.JSONDecodeError as e: log_progress(f"extract_json_from_response: Failed to decode JSON from markdown block: {e}\nProblematic: '{json_str}'"); return None
+    log_progress("extract_json_from_response: No markdown JSON, trying heuristic.")
+    first_b, first_sq_b = text_response.find('{'), text_response.find('[')
+    start_idx = min(first_b, first_sq_b) if first_b != -1 and first_sq_b != -1 else max(first_b, first_sq_b)
+    if start_idx != -1:
+        cand_str = text_response[start_idx:]; ob, osb, lci = 0,0,-1
+        for i,c in enumerate(cand_str):
+            if c=='{':ob+=1 elif c=='}':ob-=1 elif c=='[':osb+=1 elif c==']':osb-=1
+            if ob==0 and osb==0 and (c=='}' or c==']'):lci=i;break
+        if lci!=-1:
+            h_str=cand_str[:lci+1];log_progress(f"extract_json_from_response: Heuristic segment: '{h_str[:200]}...'")
+            try: return json.loads(h_str)
+            except json.JSONDecodeError as e: log_progress(f"extract_json_from_response: Failed heuristic decode: {e}\nProblematic: '{h_str}'")
+        else: log_progress("extract_json_from_response: Could not find balanced end for heuristic JSON extraction.")
+    else: log_progress("extract_json_from_response: No JSON start character for heuristic extraction.")
+    log_progress("extract_json_from_response: Falling back to parse entire response.")
+    try: return json.loads(text_response)
+    except json.JSONDecodeError as e: log_progress(f"extract_json_from_response: Failed full parse: {e}"); return None
+
+
+# --- Question Generation Function with API-provided Topic Exclusion Hints ---
+# This function now returns both the parsed data AND the extracted keywords
+def generate_single_question_with_retry(
+    prompt: str,
+    question_type: str,
+    generation_attempt_num: int,
+    excluded_topics: List[str], # List of keywords/topics to avoid
+    max_api_calls: int = 3
+) -> tuple[Optional[Dict[str, Any]], List[str]]: # Returns (question_data, keywords)
+    
+    generation_config = genai.types.GenerationConfig(
+        temperature=0.9, # High temp for exploration
+        top_p=0.95,
+        max_output_tokens=2048 # Ensure enough space for JSON + keywords
+    )
+    modified_prompt = prompt # Start with the base prompt
+
+    # Construct the dynamic uniqueness instruction
+    uniqueness_header = (
+        f"You are generating question number {generation_attempt_num} of type '{question_type}' for this text. "
+        "It is ABSOLUTELY CRITICAL that this new question is SUBSTANTIALLY DIFFERENT in topic and focus from any previous questions. "
+        "DO NOT repeat themes or ask slight variations of the same core idea.\n"
+    )
+
+    if excluded_topics:
+        # Phrase the exclusion as avoiding the *topics/concepts* related to these keywords
+        uniqueness_header += "IMPORTANT: You have ALREADY generated questions covering topics or concepts indicated by these keywords: "
+        uniqueness_header += f"[{', '.join(excluded_topics)}].\n"
+        uniqueness_header += "Your new question MUST target COMPLETELY DIFFERENT information, details, concepts, named entities (like specific people, companies, or tools mentioned), processes, specific outcomes (like percentages or figures), relationships, or distinct sections of the provided text. "
+        uniqueness_header += "EXPLICITLY AVOID any question related to the SEMANTIC AREAS suggested by these excluded keywords. Think creatively to find a NEW, testable point or detail.\n\n"
+    else:
+        uniqueness_header += "This is the first question of this type. Focus on a clear and central point from the text.\n\n"
+    
+    uniqueness_header += ("General guidelines for achieving diversity:\n"
+                          "1. Identify a COMPLETELY NEW angle, specific detail, named entity (person, company, product), specific process, cause/effect relationship, comparison, or consequence mentioned in the text.\n"
+                          "2. If the text is structured (e.g., multiple testimonials, paragraphs), try to draw from different structures or sections.\n"
+                          "3. Vary the question phrasing and style significantly.\n\n"
+                          "Now, generate the question and provide relevant keywords as requested in the format instructions below.\n\n" # Instruction updated
+                          "--- Original Format Instructions ---\n")
+
+    # Combine the uniqueness header with the original prompt
+    modified_prompt = uniqueness_header + prompt
+    
+    if generation_attempt_num > 1 or excluded_topics:
+         log_progress(f"Prompting for {question_type} (Gen {generation_attempt_num}) with excluded keywords (indicating topics): {excluded_topics if excluded_topics else 'None'}...")
+    else:
+         log_progress(f"Prompting for {question_type} (Gen {generation_attempt_num}) without exclusions...")
+
+
+    for api_call_attempt in range(max_api_calls):
+        try:
+            log_progress(f"Sending prompt for {question_type} (Gen {generation_attempt_num}, API call {api_call_attempt + 1}/{max_api_calls})...")
+            # log_progress(f"Prompt Start: {modified_prompt[:800]}...") 
+            
+            response = model.generate_content(modified_prompt, generation_config=generation_config)
+            
+            if response.prompt_feedback and response.prompt_feedback.block_reason:
+                log_progress(f"Prompt blocked. Reason: {response.prompt_feedback.block_reason}. Ratings: {response.prompt_feedback.safety_ratings}")
+                return None, [] # Return None data, empty keywords
+            if not response.parts:
+                finish_reason_msg = "Unknown"; safety_ratings_msg = "N/A"
+                if response.candidates and len(response.candidates) > 0:
+                    candidate = response.candidates[0]
+                    if candidate.finish_reason: finish_reason_msg = candidate.finish_reason.name
+                    if candidate.safety_ratings: safety_ratings_msg = str(candidate.safety_ratings)
+                log_progress(f"Response has no parts. Finish: {finish_reason_msg}. Safety: {safety_ratings_msg}")
+                if api_call_attempt < max_api_calls - 1: time.sleep(1 * (api_call_attempt + 1)); continue
+                return None, [] # Return None data, empty keywords
+                
+            raw_text = response.text
+            # Extract the outer JSON object
+            parsed_full_response = extract_json_from_response(raw_text)
+
+            # Now, extract question_data and keywords from the parsed object
+            question_data = None
+            extracted_keywords = []
+
+            if parsed_full_response and isinstance(parsed_full_response, dict):
+                question_data = parsed_full_response.get("question_data") # Get the nested question data
+                keywords_list = parsed_full_response.get("keywords") # Get the keywords list
+                
+                if question_data and isinstance(question_data, dict):
+                     log_progress("Successfully extracted 'question_data' from nested JSON.")
+                     # Validate the structure of question_data here if necessary (e.g., check for 'question', 'options', etc.)
+                     # Basic check: ensure it's not empty and has at least a 'question' key
+                     if not question_data or not question_data.get("question"):
+                          log_progress(f"Extracted 'question_data' looks invalid or empty: {str(question_data)[:200]}. Returning None data.")
+                          question_data = None # Treat as failed if question is missing
+
+                if keywords_list and isinstance(keywords_list, list):
+                     # Basic validation: check if it's a list of strings
+                     if all(isinstance(item, str) for item in keywords_list):
+                          extracted_keywords = keywords_list
+                          log_progress(f"Successfully extracted '{len(extracted_keywords)}' keywords from nested JSON.")
+                     else:
+                          log_progress(f"Extracted 'keywords' is not a list of strings: {str(keywords_list)[:200]}. Ignoring keywords.")
+                          extracted_keywords = [] # Ignore if not a list of strings
+                          
+                if question_data: # Only succeed if question_data was validly extracted
+                     return question_data, extracted_keywords # Success!
+                else:
+                    # Log failure if question_data wasn't found/valid, even if outer JSON parsed
+                     log_progress(f"Parsed outer JSON but failed to get valid 'question_data'. Received outer keys: {list(parsed_full_response.keys())}. Retrying API call...")
+
+            else:
+                # This else block means extract_json_from_response returned None or non-dict
+                log_progress(f"Failed to parse outer JSON or it was not a dict on API call {api_call_attempt + 1} for {question_type} Gen {generation_attempt_num}. Retrying API call...")
+
+            # If we reached here, parsing or extraction failed for this attempt
+            if api_call_attempt < max_api_calls - 1: time.sleep(1.5 * (api_call_attempt + 1))
+            else: 
+                log_progress(f"Max API calls ({max_api_calls}) reached for parsing/extraction for {question_type} Gen {generation_attempt_num}. Giving up on this question.")
+                return None, [] # Max retries for parsing/extraction
+
+        except google.api_core.exceptions.ResourceExhausted as r_exc:
+            log_progress(f"RATE LIMIT HIT ({question_type} Gen {generation_attempt_num}, API call {api_call_attempt + 1}): {str(r_exc)[:500]}")
+            if api_call_attempt < max_api_calls - 1:
+                delay_match = re.search(r"retry_delay {\s*seconds: (\d+)\s*}", str(r_exc))
+                sleep_for = 5 
+                if delay_match:
+                    try: sleep_for = int(delay_match.group(1)) + 1; log_progress(f"API suggested retry_delay of {sleep_for-1}s. Sleeping for {sleep_for}s...")
+                    except ValueError: log_progress(f"Could not parse retry_delay. Using default backoff."); sleep_for = (2 ** api_call_attempt) * 2 
+                else: log_progress(f"No specific retry_delay. Using default backoff."); sleep_for = (2 ** api_call_attempt) * 2 
+                time.sleep(sleep_for)
+            else: log_progress(f"Max API calls ({max_api_calls}) due to rate limits."); return None, []
+        except Exception as e:
+            log_progress(f"CRITICAL ERROR ({question_type} Gen {generation_attempt_num}, API call {api_call_attempt + 1}): {type(e).__name__} - {str(e)}")
+            traceback.print_exc()
+            if api_call_attempt < max_api_calls - 1: time.sleep(2 ** api_call_attempt); log_progress("Retrying API call...")
+            else: log_progress(f"Max API calls ({max_api_calls}) due to critical errors."); return None, []
+            
+    return None, [] # Should ideally not reach here, but as a final fallback
+
+# --- Main Question Generation Logic ---
+def generate_questions_from_text(text_content: str, num_mcq: int = 0, num_short_answer: int = 0, num_long_answer: int = 0, subject: str = "General", grade_level: str = "N/A") -> Dict[str, List[Any]]:
+    generated_questions = {"mcq": [], "short_answer": [], "long_answer": []}
+    if not text_content: log_progress("Input text_content is empty."); return generated_questions
+    if len(text_content) < 50 and (num_mcq + num_short_answer + num_long_answer > 0):
+        log_progress("Warning: Input text is very short. Quality may be affected.")
+
+    # Initialize excluded topics lists for each type
+    mcq_excluded_topics: List[str] = []
+    saq_excluded_topics: List[str] = []
+    laq_excluded_topics: List[str] = []
+    # Optional: Share excluded topics between question types if topics are highly overlapping
+    # all_excluded_topics: List[str] = [] # Uncomment if you want to pool exclusions
+
+    # --- Generate MCQs ---
+    if num_mcq > 0:
+        log_progress(f"Starting MCQ generation for {num_mcq} questions...")
+        # Prompt updated to request nested JSON with keywords
+        mcq_base_prompt = f"""You are an expert quiz generator. Your primary goal is to create DIVERSE questions.
+When asked to generate multiple questions from the same text, EACH new question MUST explore a different facet, detail, or concept from the text. Avoid thematic repetition.
+Generate exactly ONE multiple choice question with 4 unique options based on the provided text.
+In addition to the question, identify 5-7 general keywords or terms from the text that BEST represent the core topic or focus of the question you generated. These keywords should help distinguish this question's topic from others. Avoid stopwords and overly generic words.
+
+The response MUST be a single JSON object with exactly TWO keys:
+1. "question_data": Contains a JSON object for the question in THIS exact format:
+   {{
+     "question": "Your question here?",
+     "options": ["Option A", "Option B", "Option C", "Option D"],
+     "correct_option_index": 0
+   }}
+   Ensure 'correct_option_index' is a 0-indexed integer. Options should be distinct and plausible.
+2. "keywords": Contains a JSON list of the 5-7 keywords identifying the question's topic.
+
+Example of the full response format:
+{{
+  "question_data": {{ "question": "Example question?", "options": ["A", "B", "C", "D"], "correct_option_index": 1 }},
+  "keywords": ["example", "topic", "keywords", "list"]
+}}
+
+Do NOT include any text, explanation, or apologies before or after this JSON object.
+If you absolutely cannot generate a valid and *distinct* question (and corresponding keywords) in the specified JSON format from this text, respond with ONLY this exact JSON object and nothing else: {{"question_data": {{"question": "", "options": [], "correct_option_index": -1}}, "keywords": []}}
+
+Text: {text_content[:4000]}"""
+        
+        for i in range(num_mcq):
+            # generate_single_question_with_retry now returns (data, keywords)
+            mcq_data, extracted_keywords = generate_single_question_with_retry(
+                mcq_base_prompt, "MCQ", i + 1, list(set(mcq_excluded_topics)) 
+                # If pooling: list(set(all_excluded_topics))
+            )
+            
+            if mcq_data and isinstance(mcq_data, dict) and \
+               mcq_data.get("question") is not None and mcq_data.get("options") is not None and \
+               mcq_data.get("correct_option_index") is not None:
+                
+                # Check for failure indication (based on the inner question_data)
+                if mcq_data["question"] == "" and mcq_data.get("options", []) == [] and mcq_data.get("correct_option_index", -1) == -1:
+                    log_progress(f"MCQ {i+1}: Model indicated failure/no distinct question (inner data was empty). Skipping."); continue
+                if not isinstance(mcq_data["options"], list) or len(mcq_data["options"]) != 4 or \
+                   not isinstance(mcq_data["correct_option_index"], int):
+                    log_progress(f"MCQ {i+1}: Invalid inner question_data structure. Data: {str(mcq_data)[:300]}. Skipping."); continue
+                
+                question_text = mcq_data.get("question", "")
+                try: 
+                    correct_answer_text_val = mcq_data['options'][mcq_data['correct_option_index']]
+                except (IndexError, TypeError): # Added TypeError check
+                    log_progress(f"Error: MCQ {i+1} correct_idx {mcq_data.get('correct_option_index')} out of bounds/invalid type for options {mcq_data.get('options')}. Skipping."); continue
+                shuffled_options = list(mcq_data['options']); random.shuffle(shuffled_options)
+                try: 
+                    new_correct_index = shuffled_options.index(correct_answer_text_val)
+                except ValueError: 
+                    log_progress(f"Error: MCQ {i+1} Correct ans '{correct_answer_text_val}' not found in shuffled options {shuffled_options}. Original: {mcq_data}. Skipping."); continue
+                
+                generated_questions["mcq"].append({"type": "mcq", "question": question_text, "options": shuffled_options, "correct_option_index": new_correct_index, "marks": 1})
+                log_progress(f"Successfully generated and processed MCQ {i+1}: {question_text[:80]}...")
+                
+                # Add the keywords provided by the API to the exclusion list
+                if extracted_keywords:
+                    mcq_excluded_topics.extend(extracted_keywords)
+                    # if using pooling: all_excluded_topics.extend(extracted_keywords)
+                    log_progress(f"MCQ {i+1}: Added keywords to exclusion: {extracted_keywords}. Total unique excluded keywords for MCQs: {len(list(set(mcq_excluded_topics)))}")
+                else:
+                     log_progress(f"MCQ {i+1}: API did not provide keywords or keywords were invalid.")
+
+            else: 
+                log_progress(f"Failed to generate valid MCQ {i+1} (outer or inner data missing/invalid). Received data/keywords: {str(mcq_data)[:200]} / {str(extracted_keywords)[:200]}...")
+        log_progress(f"Finished MCQ generation. Got {len(generated_questions['mcq'])} MCQs.")
+
+    # --- Generate Short Answer Questions (Apply similar exclusion logic) ---
+    if num_short_answer > 0:
+        log_progress(f"Starting SAQ generation for {num_short_answer} questions...")
+        # Prompt updated to request nested JSON with keywords
+        saq_base_prompt_text = """You are an expert quiz generator for """ + subject + """ at grade """ + grade_level + """.
+Generate ONE short answer question based on the provided text.
+In addition to the question, identify 5-7 general keywords or terms from the text that BEST represent the core topic or focus of the question you generated. These keywords should help distinguish this question's topic from others. Avoid stopwords and overly generic words.
+
+The response MUST be a single JSON object with exactly TWO keys:
+1. "question_data": Contains a JSON object for the question in THIS exact format:
+   { "question": "Your question here?", "guideline": "Guideline for answering here." }
+2. "keywords": Contains a JSON list of the 5-7 keywords identifying the question's topic.
+
+Example of the full response format:
+{
+  "question_data": { "question": "Example question?", "guideline": "Example guideline." },
+  "keywords": ["example", "topic", "keywords", "list"]
+}
+
+Do NOT include any text, explanation, or apologies before or after this JSON object.
+If you absolutely cannot generate a valid and *distinct* question (and corresponding keywords) in the specified JSON format from this text, respond with ONLY: {{"question_data": {{"question": "", "guideline": ""}}, "keywords": []}}
+
+Text content: {text_content}"""
+        for i in range(num_short_answer):
+            saq_data, extracted_keywords = generate_single_question_with_retry(
+                saq_base_prompt_text.format(text_content=text_content[:4500]), # Format text here
+                "Short Answer", i + 1, list(set(saq_excluded_topics))
+                # If pooling: list(set(all_excluded_topics))
+            )
+            if saq_data and isinstance(saq_data, dict) and \
+               saq_data.get("question") is not None and saq_data.get("guideline") is not None:
+                
+                if saq_data["question"] == "" and saq_data.get("guideline", "") == "":
+                    log_progress(f"SAQ {i+1}: Model indicated failure/no distinct question (inner data was empty). Skipping."); continue
+                
+                question_text = saq_data.get("question", "")
+                generated_questions["short_answer"].append({"type": "short_answer", "question": question_text, "answer_guideline": saq_data['guideline'], "marks": 4})
+                log_progress(f"Successfully generated and processed SAQ {i+1}: {question_text[:80]}...")
+                new_keywords = extracted_keywords # Use API-provided keywords
+                if new_keywords: saq_excluded_topics.extend(new_keywords); # if pooling: all_excluded_topics.extend(new_keywords)
+                log_progress(f"SAQ {i+1}: Exclusion keywords added: {new_keywords}. Total unique excluded keywords for SAQs: {len(list(set(saq_excluded_topics)))}")
+            else: log_progress(f"Failed to generate valid SAQ {i+1}. Received data/keywords: {str(saq_data)[:200]} / {str(extracted_keywords)[:200]}...")
+        log_progress(f"Finished SAQ generation. Got {len(generated_questions['short_answer'])} SAQs.")
+
+    # --- Generate Long Answer Questions (Apply similar exclusion logic) ---
+    if num_long_answer > 0:
+        log_progress(f"Starting LAQ generation for {num_long_answer} questions...")
+        # Prompt updated to request nested JSON with keywords
+        laq_base_prompt_text = """You are an expert quiz generator for """ + subject + """ at grade """ + grade_level + """.
+Generate ONE detailed essay or long answer question based on the provided text.
+In addition to the question, identify 5-7 general keywords or terms from the text that BEST represent the core topic or focus of the question you generated. These keywords should help distinguish this question's topic from others. Avoid stopwords and overly generic words.
+
+The response MUST be a single JSON object with exactly TWO keys:
+1. "question_data": Contains a JSON object for the question in THIS exact format:
+   { "question": "Your essay question here?", "guideline": "Comprehensive answer guideline here." }
+2. "keywords": Contains a JSON list of the 5-7 keywords identifying the question's topic.
+
+Example of the full response format:
+{
+  "question_data": { "question": "Example essay question?", "guideline": "Example guideline." },
+  "keywords": ["example", "essay", "topic", "keywords", "list"]
+}
+
+Do NOT include any text, explanation, or apologies before or after the JSON object.
+If you absolutely cannot generate a valid and *distinct* question (and corresponding keywords), respond with ONLY: {{"question_data": {{"question": "", "guideline": ""}}, "keywords": []}}
+
+Text content: {text_content}"""
+        for i in range(num_long_answer):
+            laq_data, extracted_keywords = generate_single_question_with_retry(
+                 laq_base_prompt_text.format(text_content=text_content[:7000]), # Format text here
+                 "Long Answer", i + 1, list(set(laq_excluded_topics))
+                 # If pooling: list(set(all_excluded_topics))
+            )
+            if laq_data and isinstance(laq_data, dict) and \
+               laq_data.get("question") is not None and laq_data.get("guideline") is not None:
+                
+                if laq_data["question"] == "" and laq_data.get("guideline", "") == "":
+                    log_progress(f"LAQ {i+1}: Model indicated failure/no distinct question (inner data was empty). Skipping."); continue
+                
+                question_text = laq_data.get("question", "")
+                generated_questions["long_answer"].append({"type": "long_answer", "question": question_text, "answer_guideline": laq_data['guideline'], "marks": 8})
+                log_progress(f"Successfully generated and processed LAQ {i+1}: {question_text[:80]}...")
+                new_keywords = extracted_keywords # Use API-provided keywords
+                if new_keywords: laq_excluded_topics.extend(new_keywords); # if pooling: all_excluded_topics.extend(new_keywords)
+                log_progress(f"LAQ {i+1}: Exclusion keywords added: {new_keywords}. Total unique excluded keywords for LAQs: {len(list(set(laq_excluded_topics)))}")
+            else: log_progress(f"Failed to generate valid LAQ {i+1}. Received data/keywords: {str(laq_data)[:200]} / {str(extracted_keywords)[:200]}...")
+        log_progress(f"Finished LAQ generation. Got {len(generated_questions['long_answer'])} LAQs.")
+    
+    # Optional: You could return the final combined excluded topics if useful for debugging or analytics
+    # total_unique_excluded = list(set(mcq_excluded_topics + saq_excluded_topics + laq_excluded_topics))
+    # log_progress(f"Total unique keywords excluded across all types: {len(total_unique_excluded)}")
+
+    return generated_questions
+
+# --- Example Usage ---
+if __name__ == '__main__':
+    dummy_text_rich = """
+    The Amazon rainforest is the largest tropical rainforest in the world, covering much of northwestern Brazil, Peru, 
+    and other South American countries. It is renowned for its biodiversity, hosting millions of species of insects, plants, 
+    birds, mammals, and fish. The Amazon River, the largest river by discharge volume, flows through the rainforest, 
+    supporting diverse aquatic life, including the Amazon river dolphin and piranha. 
+
+    Deforestation is a major threat, driven primarily by cattle ranching, agriculture (soybeans), logging, and mining. 
+    This loss of forest cover has significant impacts on climate change, as the rainforest acts as a massive carbon sink. 
+    Indigenous peoples have lived in the Amazon for thousands of years and play a crucial role in its conservation. 
+    Efforts to protect the Amazon include creating protected areas and promoting sustainable practices. 
+    The scale of the Amazon is immense, influencing global weather patterns.
+    """
+    
+    log_progress(f"--- Starting Question Generation Example (Generic Text, API Keywords for Exclusion) ---")
+    questions = generate_questions_from_text(
+        dummy_text_rich, 
+        num_mcq=5, 
+        num_short_answer=3, 
+        num_long_answer=1,
+        subject="Geography/Biology",
+        grade_level="High School"
+    )
+    log_progress(f"--- Question Generation Complete. Displaying Results ---")
+    
+    print("\n--- Generated MCQs ---")
+    if questions["mcq"]:
+        for q_idx, q_data in enumerate(questions["mcq"]):
+            print(f"\nMCQ {q_idx+1}: Q: {q_data['question']}")
+            for i, opt in enumerate(q_data['options']): print(f"    {chr(65+i)}. {opt} {'(Correct)' if i == q_data['correct_option_index'] else ''}")
+            print(f"  Marks: {q_data['marks']}")
+    else: print("No MCQs generated or all failed.")
+
+    print("\n--- Generated Short Answer Questions ---")
+    if questions["short_answer"]:
+        for q_idx, q_data in enumerate(questions["short_answer"]):
+            print(f"\nSAQ {q_idx+1}: Q: {q_data['question']}")
+            print(f"  Guideline: {q_data['answer_guideline']}\n  Marks: {q_data['marks']}")
+    else: print("No SAQs generated or all failed.")
+
+    print("\n--- Generated Long Answer Questions ---")
+    if questions["long_answer"]:
+        for q_idx, q_data in enumerate(questions["long_answer"]):
+            print(f"\nLAQ {q_idx+1}: Q: {q_data['question']}")
+            print(f"  Guideline: {q_data['answer_guideline']}\n  Marks: {q_data['marks']}")
+    else: print("No LAQs generated or all failed.")
+
+    log_progress("--- Example Script Finished ---")

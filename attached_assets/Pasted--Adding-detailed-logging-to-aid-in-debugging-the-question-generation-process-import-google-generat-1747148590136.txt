@@ -1,0 +1,399 @@
+# Adding detailed logging to aid in debugging the question generation process.
+import google.generativeai as genai
+import os
+import random
+from typing import Dict, List, Any
+import time
+import json
+import re
+
+# Configure Gemini
+api_key = os.getenv('GEMINI_API_KEY')
+if not api_key:
+    raise ValueError("GEMINI_API_KEY environment variable not set.")
+genai.configure(api_key=api_key)
+
+DEFAULT_SAFETY_SETTINGS = [
+    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+]
+
+MODEL_NAME = 'models/gemini-pro' # Or your verified model name
+
+model = genai.GenerativeModel(
+    MODEL_NAME,
+    safety_settings=DEFAULT_SAFETY_SETTINGS
+)
+
+def log_progress(msg):
+    # Ensure logs are flushed, important for seeing them in real-time when debugging
+    print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
+
+def extract_json_from_response(text_response: str) -> Any:
+    if not text_response:
+        log_progress("extract_json_from_response: Received empty text_response.")
+        return None
+
+    # Log the full response when attempting extraction. BE CAREFUL if responses are huge.
+    # For debugging, this is invaluable. Truncate if necessary for production logs.
+    log_progress(f"extract_json_from_response: Attempting to extract JSON from: ---START RAW RESPONSE---\n{text_response}\n---END RAW RESPONSE---")
+
+    # 1. Try to find JSON within markdown triple backticks
+    match = re.search(r"```json\s*([\s\S]*?)\s*```", text_response, re.IGNORECASE)
+    if match:
+        json_str = match.group(1)
+        log_progress(f"extract_json_from_response: Found JSON in markdown block.")
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError as e:
+            log_progress(f"extract_json_from_response: Failed to decode JSON from markdown block: {e}")
+            log_progress(f"Problematic JSON string (from markdown): '{json_str}'")
+            # Don't fall through here, if markdown is present, it should be the primary source.
+            # If it's malformed, that's the error.
+            return None # Explicitly return None if markdown JSON is malformed
+
+    # 2. If no markdown, try to find the first '{' or '[' and use heuristic balancing
+    log_progress("extract_json_from_response: No markdown JSON found, trying heuristic extraction.")
+    first_brace = text_response.find('{')
+    first_bracket = text_response.find('[')
+    
+    start_index = -1
+    # Determine if it's an object or array and find the start
+    if first_brace != -1 and (first_bracket == -1 or first_brace < first_bracket):
+        start_index = first_brace
+    elif first_bracket != -1: # Handles first_bracket < first_brace or first_brace == -1
+        start_index = first_bracket
+
+    if start_index != -1:
+        json_candidate_str = text_response[start_index:]
+        log_progress(f"extract_json_from_response: Potential JSON start found. Candidate string (from index {start_index}): '{json_candidate_str[:300]}...'")
+        
+        # Use the existing robust balancing logic from your previous version
+        open_braces = 0
+        open_brackets = 0
+        last_char_index = -1
+
+        for i, char in enumerate(json_candidate_str):
+            if char == '{':
+                open_braces += 1
+            elif char == '}':
+                open_braces -= 1
+            elif char == '[':
+                open_brackets += 1
+            elif char == ']':
+                open_brackets -= 1
+            
+            # Check if we've returned to a balanced state for both braces and brackets
+            # and the current character is a closing one (meaning we likely ended a structure)
+            if open_braces == 0 and open_brackets == 0 and (char == '}' or char == ']'):
+                # Ensure we've actually processed some content, not just an immediate close
+                # if i > 0 or (json_candidate_str[0] == char): # Handles "{}" or "[]"
+                last_char_index = i
+                break 
+        
+        if last_char_index != -1:
+            json_str_heuristic = json_candidate_str[:last_char_index+1]
+            log_progress(f"extract_json_from_response: Heuristically extracted segment: '{json_str_heuristic[:500]}...'")
+            try:
+                return json.loads(json_str_heuristic)
+            except json.JSONDecodeError as e:
+                log_progress(f"extract_json_from_response: Failed to decode heuristically extracted JSON: {e}")
+                log_progress(f"Problematic JSON string (heuristic): '{json_str_heuristic}'")
+                # Fall through to try parsing the whole original string if this specific segment fails
+        else:
+            log_progress("extract_json_from_response: Could not find balanced end for heuristic JSON extraction from candidate.")
+    else:
+        log_progress("extract_json_from_response: No JSON start character ('{' or '[') found in the response for heuristic extraction.")
+
+    # 3. As a last resort, try to parse the entire original response string.
+    log_progress("extract_json_from_response: Falling back to parsing the entire original response string.")
+    try:
+        return json.loads(text_response)
+    except json.JSONDecodeError as e:
+        log_progress(f"extract_json_from_response: Failed to decode JSON from the entire original response: {e}")
+        # The full text_response was already logged at the beginning of the function.
+        return None # Final failure
+
+def generate_single_question_with_retry(prompt: str, question_type: str, generation_attempt_num: int, max_retries: int = 3) -> Any:
+    generation_config = genai.types.GenerationConfig(
+        temperature=0.8,
+        top_p=0.95,
+        top_k=40,
+        max_output_tokens=1024
+    )
+
+    modified_prompt = prompt
+    # Modify prompt for uniqueness only if this is not the first question of this type we're asking for
+    if generation_attempt_num > 1:
+        # Prepend a general instruction for variety
+        modified_prompt = (
+            "Please generate a NEW and DISTINCT question based on the following instructions and text. "
+            "Avoid repeating questions or concepts you might have generated for this text previously.\n\n"
+            + prompt
+        )
+        log_progress(f"Modified prompt for uniqueness for {question_type} (Overall attempt {generation_attempt_num}).")
+
+    for api_call_attempt in range(max_retries):
+        try:
+            log_progress(f"Sending prompt for {question_type} (Gen attempt {generation_attempt_num}, API call {api_call_attempt + 1}/{max_retries})...")
+            # log_progress(f"Using prompt: {modified_prompt[:400]}...") # Uncomment to debug full prompt if needed
+
+            response = model.generate_content(
+                modified_prompt,
+                generation_config=generation_config,
+                safety_settings=DEFAULT_SAFETY_SETTINGS
+            )
+
+            if response.prompt_feedback and response.prompt_feedback.block_reason:
+                log_progress(f"Prompt blocked. Reason: {response.prompt_feedback.block_reason}. Ratings: {response.prompt_feedback.safety_ratings}")
+                return None
+
+            if not response.parts:
+                finish_reason = "Unknown"
+                if response.candidates and response.candidates[0].finish_reason:
+                    finish_reason = response.candidates[0].finish_reason.name
+                log_progress(f"Response has no parts (text). Finish reason: {finish_reason}")
+                # Check safety ratings on candidate if parts are empty
+                if response.candidates and response.candidates[0].safety_ratings:
+                     log_progress(f"Candidate safety ratings: {response.candidates[0].safety_ratings}")
+                return None
+            
+            raw_text = response.text # response.text should get the combined text from parts
+            log_progress(f"Received response from Gemini API. Raw text length: {len(raw_text)} chars.")
+            # Raw text is now logged extensively in extract_json_from_response
+
+            parsed_data = extract_json_from_response(raw_text)
+            if parsed_data:
+                log_progress("Successfully parsed JSON from response.")
+                return parsed_data
+            else:
+                log_progress(f"Failed to parse JSON from response on API call {api_call_attempt + 1} for {question_type} Gen attempt {generation_attempt_num}.")
+                if api_call_attempt < max_retries - 1:
+                    log_progress("Retrying API call for JSON parsing issue...")
+                    time.sleep(1 * (api_call_attempt + 1))
+                else:
+                    log_progress(f"Max API call retries ({max_retries}) reached for parsing JSON for {question_type} Gen attempt {generation_attempt_num}.")
+                    return None # Max retries for this specific API call loop
+
+        except Exception as e:
+            log_progress(f"ERROR during API call/processing ({question_type} Gen {generation_attempt_num}, API call {api_call_attempt + 1}): {type(e).__name__} - {str(e)}")
+            import traceback
+            traceback.print_exc()
+            if api_call_attempt < max_retries - 1:
+                log_progress("Retrying API call due to error...")
+                time.sleep(2 ** api_call_attempt)
+            else:
+                log_progress(f"Max API call retries ({max_retries}) reached due to errors for {question_type} Gen attempt {generation_attempt_num}.")
+                return None # Max retries for this specific API call loop
+    return None # Should be unreachable if loop runs, but as a fallback.
+
+
+def generate_questions_from_text(text_content, num_mcq=0, num_short_answer=0, num_long_answer=0, subject="General", grade_level="N/A"):
+    generated_questions = {
+        "mcq": [],
+        "short_answer": [],
+        "long_answer": []
+    }
+
+    if not text_content:
+        log_progress("Input text_content is empty. Returning empty questions.")
+        return generated_questions
+
+    # --- Generate MCQs ---
+    if num_mcq > 0:
+        log_progress(f"Starting MCQ generation for {num_mcq} questions...")
+        mcq_base_prompt = f"""You are an expert quiz generator.
+Generate exactly ONE multiple choice question with 4 unique options based on the provided text.
+The response MUST be a single JSON object in this exact format:
+{{
+  "question": "Your question here?",
+  "options": ["Option A", "Option B", "Option C", "Option D"],
+  "correct_option_index": 0
+}}
+Ensure the 'correct_option_index' refers to the correct option in the 'options' list (0-indexed).
+The options should be distinct and plausible.
+Do not include any text, explanation, or apologies before or after the JSON object.
+If you cannot generate a valid question in the specified JSON format from the text, respond with only an empty JSON object like {{}} and nothing else.
+
+Text: {text_content[:2000]}"""
+
+        for i in range(num_mcq):
+            # log_progress(f"Generating MCQ {i+1}/{num_mcq}...") # Logged inside generate_single_question_with_retry
+            mcq_data = generate_single_question_with_retry(mcq_base_prompt, "MCQ", i + 1)
+
+            if mcq_data and isinstance(mcq_data, dict) and \
+               mcq_data.get("question") and mcq_data.get("options") is not None and \
+               mcq_data.get("correct_option_index") is not None and \
+               isinstance(mcq_data["options"], list) and len(mcq_data["options"]) == 4 and \
+               isinstance(mcq_data["correct_option_index"], int):
+                # Check if it's the "empty JSON" fallback
+                if not mcq_data["question"] and not mcq_data["options"] and mcq_data["correct_option_index"] == 0: # Heuristic for empty
+                    # A more robust check for empty would be if mcq_data == {}
+                    # but the prompt asks for a specific empty structure.
+                    # Let's check if mcq_data is effectively empty (e.g., just default values from a template)
+                    if mcq_data.get("question") == "Your question here?": # or if it's literally {}
+                         log_progress(f"MCQ {i+1} was an empty/placeholder JSON. Skipping.")
+                         continue
+
+                try:
+                    correct_answer_text = mcq_data['options'][mcq_data['correct_option_index']]
+                except IndexError:
+                    log_progress(f"Error: MCQ {i+1} correct_option_index {mcq_data['correct_option_index']} out of bounds for options {mcq_data['options']}.")
+                    continue
+                shuffled_options = list(mcq_data['options'])
+                random.shuffle(shuffled_options)
+                try:
+                    new_correct_index = shuffled_options.index(correct_answer_text)
+                except ValueError:
+                    log_progress(f"Error: MCQ {i+1} Original correct answer '{correct_answer_text}' not found in shuffled options {shuffled_options}. Original data: {mcq_data}")
+                    continue
+                generated_questions["mcq"].append({
+                    "type": "mcq",
+                    "question": mcq_data['question'],
+                    "options": shuffled_options,
+                    "correct_option_index": new_correct_index,
+                    "marks": 1
+                })
+                log_progress(f"Successfully generated and processed MCQ {i+1}.")
+            else:
+                log_progress(f"Failed to generate valid MCQ {i+1} or response was not in expected format or was empty. Received data: {str(mcq_data)[:300]}...") # Log part of data
+        log_progress(f"Finished MCQ generation. Got {len(generated_questions['mcq'])} MCQs.")
+
+    # ... (Short Answer and Long Answer sections remain largely the same, but ensure they also call
+    # generate_single_question_with_retry with the generation_attempt_num)
+
+    # --- Generate Short Answer Questions ---
+    if num_short_answer > 0:
+        log_progress(f"Starting Short Answer Question generation for {num_short_answer} questions...")
+        saq_base_prompt_template = f"""You are an expert quiz generator for {subject} at grade {grade_level}.
+Based on the provided text, generate exactly ONE short answer question.
+For the question, provide:
+- The question text
+- A guideline for answering (key points to cover or expected answer elements)
+The response MUST be a single JSON object in this exact format:
+{{
+  "question": "Your question here?",
+  "guideline": "Guideline for answering here."
+}}
+Do not include any text, explanation, or apologies before or after the JSON object.
+If you cannot generate a valid question in the specified JSON format from the text, respond with only an empty JSON object like {{}} and nothing else.
+
+Text content: {{text_content}}"""
+        for i in range(num_short_answer):
+            current_prompt = saq_base_prompt_template.format(text_content=text_content[:3000])
+            saq_data = generate_single_question_with_retry(current_prompt, "Short Answer", i + 1)
+
+            if saq_data and isinstance(saq_data, dict) and \
+               saq_data.get("question") and saq_data.get("guideline") is not None:
+                if not saq_data["question"]: # Check for effectively empty response
+                    log_progress(f"SAQ {i+1} was an empty/placeholder JSON. Skipping.")
+                    continue
+                generated_questions["short_answer"].append({
+                    "type": "short_answer",
+                    "question": saq_data['question'],
+                    "answer_guideline": saq_data['guideline'],
+                    "marks": 4
+                })
+                log_progress(f"Successfully generated and processed Short Answer Question {i+1}.")
+            else:
+                log_progress(f"Failed to generate valid SAQ {i+1} or format error. Data: {str(saq_data)[:300]}...")
+        log_progress(f"Finished SAQ generation. Got {len(generated_questions['short_answer'])} SAQs.")
+
+    # --- Generate Long Answer Questions ---
+    if num_long_answer > 0:
+        log_progress(f"Starting Long Answer Question generation for {num_long_answer} questions...")
+        laq_base_prompt_template = f"""You are an expert quiz generator for {subject} at grade {grade_level}.
+Based on the provided text, generate exactly ONE detailed essay or long answer question.
+For the question, provide:
+- The question text
+- A comprehensive answer guideline outlining key concepts, arguments, or points to be included.
+The response MUST be a single JSON object in this exact format:
+{{
+  "question": "Your essay question here?",
+  "guideline": "Comprehensive answer guideline here."
+}}
+Do not include any text, explanation, or apologies before or after the JSON object.
+If you cannot generate a valid question in the specified JSON format from the text, respond with only an empty JSON object like {{}} and nothing else.
+
+Text content: {{text_content}}"""
+        for i in range(num_long_answer):
+            current_prompt = laq_base_prompt_template.format(text_content=text_content[:4000])
+            laq_data = generate_single_question_with_retry(current_prompt, "Long Answer", i + 1)
+
+            if laq_data and isinstance(laq_data, dict) and \
+               laq_data.get("question") and laq_data.get("guideline") is not None:
+                if not laq_data["question"]: # Check for effectively empty response
+                    log_progress(f"LAQ {i+1} was an empty/placeholder JSON. Skipping.")
+                    continue
+                generated_questions["long_answer"].append({
+                    "type": "long_answer",
+                    "question": laq_data['question'],
+                    "answer_guideline": laq_data['guideline'],
+                    "marks": 8
+                })
+                log_progress(f"Successfully generated and processed Long Answer Question {i+1}.")
+            else:
+                log_progress(f"Failed to generate valid LAQ {i+1} or format error. Data: {str(laq_data)[:300]}...")
+        log_progress(f"Finished LAQ generation. Got {len(generated_questions['long_answer'])} LAQs.")
+
+
+    if len(text_content or "") < 100 and (num_mcq + num_short_answer + num_long_answer > 0):
+        log_progress("Warning: Input text content is very short. Question quality might be affected.")
+
+    return generated_questions
+
+# Example usage
+if __name__ == '__main__':
+    dummy_text = """
+    The Industrial Revolution, which began in Great Britain in the late 18th century and later spread to other parts of the world,
+    was a period of major technological and social change. Key innovations included the steam engine, developed by James Watt,
+    which powered factories and locomotives. The invention of the spinning jenny and power loom revolutionized textile manufacturing,
+    leading to mass production of cloth. This era saw a shift from agrarian economies to industrial ones, with large populations
+    moving from rural areas to urban centers to work in factories. While it brought economic growth and new products,
+    it also led to challenging working conditions, child labor, and significant social stratification.
+    The Luddite movement emerged as a protest against job displacement due to new machinery.
+    """
+    
+    print(f"Generating questions for dummy text (Subject: History, Grade: 10th)")
+    questions = generate_questions_from_text(
+        dummy_text,
+        num_mcq=2, # Request 2 MCQs
+        num_short_answer=1,
+        num_long_answer=1,
+        subject="History",
+        grade_level="10th"
+    )
+    # ... (rest of the printing logic remains the same)
+
+    print("\n--- Generated MCQs ---")
+    if questions["mcq"]:
+        for q_idx, q in enumerate(questions["mcq"]):
+            print(f"\nMCQ {q_idx+1}:")
+            print(f"  Q: {q['question']}")
+            for i, opt in enumerate(q['options']):
+                print(f"    {chr(65+i)}. {opt} {'(Correct)' if i == q['correct_option_index'] else ''}")
+            print(f"  Marks: {q['marks']}")
+    else:
+        print("No MCQs generated.")
+
+    print("\n--- Generated Short Answer Questions ---")
+    if questions["short_answer"]:
+        for q_idx, q in enumerate(questions["short_answer"]):
+            print(f"\nShort Answer {q_idx+1}:")
+            print(f"  Q: {q['question']}")
+            print(f"  Guideline: {q['answer_guideline']}")
+            print(f"  Marks: {q['marks']}")
+    else:
+        print("No Short Answer Questions generated.")
+
+    print("\n--- Generated Long Answer Questions ---")
+    if questions["long_answer"]:
+        for q_idx, q in enumerate(questions["long_answer"]):
+            print(f"\nLong Answer {q_idx+1}:")
+            print(f"  Q: {q['question']}")
+            print(f"  Guideline: {q['answer_guideline']}")
+            print(f"  Marks: {q['marks']}")
+    else:
+        print("No Long Answer Questions generated.")

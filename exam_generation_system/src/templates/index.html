@@ -76,13 +76,13 @@
             <div class="form-section">
                 <h2>3. Question Configuration</h2>
                 <label for="num_mcq">Number of Multiple Choice Questions (Section A):</label>
-                <input type="number" name="num_mcq" id="num_mcq" value="{{ question_config.num_mcq if question_config else 15 }}" min="0" required>
+                <input type="number" name="num_mcq" id="num_mcq" value="{{ question_config.num_mcq if question_config else 5 }}" min="0" required>
 
                 <label for="num_short_answer">Number of Short Answer Questions (Section B):</label>
-                <input type="number" name="num_short_answer" id="num_short_answer" value="{{ question_config.num_short_answer if question_config else 9 }}" min="0" required>
+                <input type="number" name="num_short_answer" id="num_short_answer" value="{{ question_config.num_short_answer if question_config else 5 }}" min="0" required>
 
                 <label for="num_long_answer">Number of Long Answer Questions (Section C):</label>
-                <input type="number" name="num_long_answer" id="num_long_answer" value="{{ question_config.num_long_answer if question_config else 3 }}" min="0" required>
+                <input type="number" name="num_long_answer" id="num_long_answer" value="{{ question_config.num_long_answer if question_config else 5 }}" min="0" required>
             </div>
             
             <input type="submit" value="Generate Exam Paper">

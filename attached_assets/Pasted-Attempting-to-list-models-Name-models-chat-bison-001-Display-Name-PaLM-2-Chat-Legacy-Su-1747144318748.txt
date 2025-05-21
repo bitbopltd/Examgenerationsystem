@@ -1,0 +1,159 @@
+Attempting to list models...
+- Name: models/chat-bison-001
+  Display Name: PaLM 2 Chat (Legacy)
+  Supported Methods: ['generateMessage', 'countMessageTokens']
+- Name: models/text-bison-001
+  Display Name: PaLM 2 (Legacy)
+  Supported Methods: ['generateText', 'countTextTokens', 'createTunedTextModel']
+- Name: models/embedding-gecko-001
+  Display Name: Embedding Gecko
+  Supported Methods: ['embedText', 'countTextTokens']
+- Name: models/gemini-1.0-pro-vision-latest
+  Display Name: Gemini 1.0 Pro Vision
+  Supported Methods: ['generateContent', 'countTokens']
+  *** Found Gemini Pro model: models/gemini-1.0-pro-vision-latest
+- Name: models/gemini-pro-vision
+  Display Name: Gemini 1.0 Pro Vision
+  Supported Methods: ['generateContent', 'countTokens']
+  *** Found Gemini Pro model: models/gemini-pro-vision
+- Name: models/gemini-1.5-pro-latest
+  Display Name: Gemini 1.5 Pro Latest
+  Supported Methods: ['generateContent', 'countTokens']
+- Name: models/gemini-1.5-pro-001
+  Display Name: Gemini 1.5 Pro 001
+  Supported Methods: ['generateContent', 'countTokens', 'createCachedContent']
+- Name: models/gemini-1.5-pro-002
+  Display Name: Gemini 1.5 Pro 002
+  Supported Methods: ['generateContent', 'countTokens', 'createCachedContent']
+- Name: models/gemini-1.5-pro
+  Display Name: Gemini 1.5 Pro
+  Supported Methods: ['generateContent', 'countTokens']
+- Name: models/gemini-1.5-flash-latest
+  Display Name: Gemini 1.5 Flash Latest
+  Supported Methods: ['generateContent', 'countTokens']
+- Name: models/gemini-1.5-flash-001
+  Display Name: Gemini 1.5 Flash 001
+  Supported Methods: ['generateContent', 'countTokens', 'createCachedContent']
+- Name: models/gemini-1.5-flash-001-tuning
+  Display Name: Gemini 1.5 Flash 001 Tuning
+  Supported Methods: ['generateContent', 'countTokens', 'createTunedModel']
+- Name: models/gemini-1.5-flash
+  Display Name: Gemini 1.5 Flash
+  Supported Methods: ['generateContent', 'countTokens']
+- Name: models/gemini-1.5-flash-002
+  Display Name: Gemini 1.5 Flash 002
+  Supported Methods: ['generateContent', 'countTokens', 'createCachedContent']
+- Name: models/gemini-1.5-flash-8b
+  Display Name: Gemini 1.5 Flash-8B
+  Supported Methods: ['createCachedContent', 'generateContent', 'countTokens']
+- Name: models/gemini-1.5-flash-8b-001
+  Display Name: Gemini 1.5 Flash-8B 001
+  Supported Methods: ['createCachedContent', 'generateContent', 'countTokens']
+- Name: models/gemini-1.5-flash-8b-latest
+  Display Name: Gemini 1.5 Flash-8B Latest
+  Supported Methods: ['createCachedContent', 'generateContent', 'countTokens']
+- Name: models/gemini-1.5-flash-8b-exp-0827
+  Display Name: Gemini 1.5 Flash 8B Experimental 0827
+  Supported Methods: ['generateContent', 'countTokens']
+- Name: models/gemini-1.5-flash-8b-exp-0924
+  Display Name: Gemini 1.5 Flash 8B Experimental 0924
+  Supported Methods: ['generateContent', 'countTokens']
+- Name: models/gemini-2.5-pro-exp-03-25
+  Display Name: Gemini 2.5 Pro Experimental 03-25
+  Supported Methods: ['generateContent', 'countTokens', 'createCachedContent']
+- Name: models/gemini-2.5-pro-preview-03-25
+  Display Name: Gemini 2.5 Pro Preview 03-25
+  Supported Methods: ['generateContent', 'countTokens', 'createCachedContent']
+- Name: models/gemini-2.5-flash-preview-04-17
+  Display Name: Gemini 2.5 Flash Preview 04-17
+  Supported Methods: ['generateContent', 'countTokens', 'createCachedContent']
+- Name: models/gemini-2.5-flash-preview-04-17-thinking
+  Display Name: Gemini 2.5 Flash Preview 04-17 for cursor testing
+  Supported Methods: ['generateContent', 'countTokens', 'createCachedContent']
+- Name: models/gemini-2.5-pro-preview-05-06
+  Display Name: Gemini 2.5 Pro Preview 05-06
+  Supported Methods: ['generateContent', 'countTokens', 'createCachedContent']
+- Name: models/gemini-2.0-flash-exp
+  Display Name: Gemini 2.0 Flash Experimental
+  Supported Methods: ['generateContent', 'countTokens', 'bidiGenerateContent']
+- Name: models/gemini-2.0-flash
+  Display Name: Gemini 2.0 Flash
+  Supported Methods: ['generateContent', 'countTokens', 'createCachedContent']
+- Name: models/gemini-2.0-flash-001
+  Display Name: Gemini 2.0 Flash 001
+  Supported Methods: ['generateContent', 'countTokens', 'createCachedContent']
+- Name: models/gemini-2.0-flash-exp-image-generation
+  Display Name: Gemini 2.0 Flash (Image Generation) Experimental
+  Supported Methods: ['generateContent', 'countTokens', 'bidiGenerateContent']
+- Name: models/gemini-2.0-flash-lite-001
+  Display Name: Gemini 2.0 Flash-Lite 001
+  Supported Methods: ['generateContent', 'countTokens', 'createCachedContent']
+- Name: models/gemini-2.0-flash-lite
+  Display Name: Gemini 2.0 Flash-Lite
+  Supported Methods: ['generateContent', 'countTokens', 'createCachedContent']
+- Name: models/gemini-2.0-flash-preview-image-generation
+  Display Name: Gemini 2.0 Flash Preview Image Generation
+  Supported Methods: ['generateContent', 'countTokens']
+- Name: models/gemini-2.0-flash-lite-preview-02-05
+  Display Name: Gemini 2.0 Flash-Lite Preview 02-05
+  Supported Methods: ['generateContent', 'countTokens', 'createCachedContent']
+- Name: models/gemini-2.0-flash-lite-preview
+  Display Name: Gemini 2.0 Flash-Lite Preview
+  Supported Methods: ['generateContent', 'countTokens', 'createCachedContent']
+- Name: models/gemini-2.0-pro-exp
+  Display Name: Gemini 2.0 Pro Experimental
+  Supported Methods: ['generateContent', 'countTokens', 'createCachedContent']
+- Name: models/gemini-2.0-pro-exp-02-05
+  Display Name: Gemini 2.0 Pro Experimental 02-05
+  Supported Methods: ['generateContent', 'countTokens', 'createCachedContent']
+- Name: models/gemini-exp-1206
+  Display Name: Gemini Experimental 1206
+  Supported Methods: ['generateContent', 'countTokens', 'createCachedContent']
+- Name: models/gemini-2.0-flash-thinking-exp-01-21
+  Display Name: Gemini 2.5 Flash Preview 04-17
+  Supported Methods: ['generateContent', 'countTokens', 'createCachedContent']
+- Name: models/gemini-2.0-flash-thinking-exp
+  Display Name: Gemini 2.5 Flash Preview 04-17
+  Supported Methods: ['generateContent', 'countTokens', 'createCachedContent']
+- Name: models/gemini-2.0-flash-thinking-exp-1219
+  Display Name: Gemini 2.5 Flash Preview 04-17
+  Supported Methods: ['generateContent', 'countTokens', 'createCachedContent']
+- Name: models/learnlm-1.5-pro-experimental
+  Display Name: LearnLM 1.5 Pro Experimental
+  Supported Methods: ['generateContent', 'countTokens']
+- Name: models/learnlm-2.0-flash-experimental
+  Display Name: LearnLM 2.0 Flash Experimental
+  Supported Methods: ['generateContent', 'countTokens']
+- Name: models/gemma-3-1b-it
+  Display Name: Gemma 3 1B
+  Supported Methods: ['generateContent', 'countTokens']
+- Name: models/gemma-3-4b-it
+  Display Name: Gemma 3 4B
+  Supported Methods: ['generateContent', 'countTokens']
+- Name: models/gemma-3-12b-it
+  Display Name: Gemma 3 12B
+  Supported Methods: ['generateContent', 'countTokens']
+- Name: models/gemma-3-27b-it
+  Display Name: Gemma 3 27B
+  Supported Methods: ['generateContent', 'countTokens']
+- Name: models/embedding-001
+  Display Name: Embedding 001
+  Supported Methods: ['embedContent']
+- Name: models/text-embedding-004
+  Display Name: Text Embedding 004
+  Supported Methods: ['embedContent']
+- Name: models/gemini-embedding-exp-03-07
+  Display Name: Gemini Embedding Experimental 03-07
+  Supported Methods: ['embedContent', 'countTextTokens']
+- Name: models/gemini-embedding-exp
+  Display Name: Gemini Embedding Experimental
+  Supported Methods: ['embedContent', 'countTextTokens']
+- Name: models/aqa
+  Display Name: Model that performs Attributed Question Answering.
+  Supported Methods: ['generateAnswer']
+- Name: models/imagen-3.0-generate-002
+  Display Name: Imagen 3.0 002 model
+  Supported Methods: ['predict']
+- Name: models/gemini-2.0-flash-live-001
+  Display Name: Gemini 2.0 Flash 001
+  Supported Methods: ['bidiGenerateContent', 'countTokens']

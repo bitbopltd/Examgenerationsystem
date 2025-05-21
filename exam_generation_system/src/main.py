@@ -19,7 +19,7 @@ app = Flask(__name__)
 # Configuration
 UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'uploads') # /home/ubuntu/exam_generation_system/uploads
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
-app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16 MB max upload size
+app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB max upload size
 ALLOWED_EXTENSIONS = {"pdf"}
 
 # Create upload folder if it doesn't exist
